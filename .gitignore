@@ -1,0 +1,27 @@
+# Generated datasets and experiments
+outputs/
+student_outputs/
+data/
+datasets/
+train/
+val/
+test/
+sample_submission.csv
+*.pt
+*.pth
+*.safetensors
+*.zip
+# Local runtimes / credentials
+.venv/
+venv/
+__pycache__/
+.ipynb_checkpoints/
+.env
+.env.*
+!.env.example
+kaggle.json
+credentials*.json
+*.pem
+
+# I0 Colab experiment artifacts
+student_outputs_I0/
