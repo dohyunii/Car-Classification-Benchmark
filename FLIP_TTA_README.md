@@ -1,5 +1,7 @@
 # Fixed horizontal-flip TTA
 
+For a self-contained Colab notebook, use [F0_DINOv2_TTA.ipynb](F0_DINOv2_TTA.ipynb). It can train a fresh F0 or restore the original checkpoint; see [F0_TTA_README.md](F0_TTA_README.md).
+
 A small validation split gives uncertain comparisons. On200 images, one correct prediction changes accuracy by0.5 percentage points. A small validation loss does not prove TTA will lose on Kaggle, and it also does not establish a Kaggle gain. Compare one fixed candidate; avoid selecting TTA weights/crops or repeatedly searching against the leaderboard.
 
 This experiment averages **probabilities** from the deterministic original center crop and its horizontal flip, with equal weights. It uses a frozen backbone, head eval mode (no Dropout/BatchNorm updates), and the original saved training-only feature statistics. No training, label changes, test-time learning, or automatic Kaggle submission occurs.
