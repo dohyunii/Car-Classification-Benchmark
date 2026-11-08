@@ -49,9 +49,11 @@ class CrossEnsembleTests(unittest.TestCase):
             base={'backbone':'dinov2_vitb14','seed_aug':123,'seed_head':2026,'class_to_idx':mapping,
                   'feature_mean':mean,'feature_std':std,'head_state_dict':head.state_dict(),'hub_ref':m.HUB_REF,
                   'head_config':{'input_dim':768,'hidden_dim':128,'use_bn':True,'dropout':.3,'num_classes':20},
-                  'metrics':m.metrics(targets,p),'feature_metadata':{'model':'dinov2_vitb14',
+                  'metrics':m.metrics(targets,p),'feature_metadata':{'backbone':'dinov2_vitb14',
                   'weights_sha256':m.weight_digest(Encoder(768)),'test_ids':ids,
-                  'manifest':[{'split':'test','files':[{'path':'image.png','sha256':m.sha(image)}]}]}}
+                  'manifest':[[],[],[{'path':'image.png','sha256':m.sha(image)}]]}}
+            self.assertNotIn('model',base['feature_metadata'])
+            self.assertEqual(base['feature_metadata']['backbone'],'dinov2_vitb14')
             bp=root/'base.pt';torch.save(base,bp)
             fake_data=(mapping,[image]*200,targets,[image]*2,ids)
             with patch.object(m,'load_data',return_value=fake_data),patch('torch.hub.load',side_effect=[Encoder(384),Encoder(768)]) as hub:

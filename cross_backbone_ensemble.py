@@ -119,11 +119,18 @@ def run(data_root,f0_run,i0_checkpoint,storage_root,batch_size=8):
     small=[checked_checkpoint(path,'dinov2_vits14',384,seed,mapping) for path,seed in zip(paths,SEEDS)]
     base=checked_checkpoint(i0_checkpoint,'dinov2_vitb14',768,2026,mapping)
     assert base['hub_ref']==HUB_REF
-    assert base['feature_metadata']['model']=='dinov2_vitb14'
+    source_meta=base['feature_metadata']
+    source_backbone=source_meta.get('backbone',source_meta.get('model'))
+    assert source_backbone=='dinov2_vitb14','I0 feature metadata identifies a different backbone'
+    if 'backbone' in source_meta and 'model' in source_meta:
+        assert source_meta['backbone']==source_meta['model'],'Conflicting backbone metadata'
     assert base['feature_metadata']['test_ids']==ids,'Original test ID order differs from I0 source'
     root=Path(data_root).resolve()
     for split in base['feature_metadata']['manifest']:
-        for entry in split['files']:
+        # I0 uses a list of entry lists; older helpers used {'split':..., 'files':...}.
+        entries=split['files'] if isinstance(split,dict) else split
+        assert isinstance(entries,list),'Unrecognized I0 dataset manifest schema'
+        for entry in entries:
             image=(root/entry['path']).resolve()
             assert image.is_relative_to(root) and image.is_file()
             assert sha(image)==entry['sha256'],'Dataset image differs from the I0 training/evaluation manifest'
