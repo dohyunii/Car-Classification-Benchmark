@@ -25,3 +25,8 @@ credentials*.json
 
 # I0 Colab experiment artifacts
 student_outputs_I0/
+
+student_outputs_*/
+*.joblib
+*.parquet
+cars196/
