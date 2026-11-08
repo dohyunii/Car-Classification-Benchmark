@@ -28,18 +28,21 @@ class Tests(unittest.TestCase):
         self.assertTrue(all(p.grad is None for block in model.backbone.blocks[:10] for p in block.parameters()))
         self.assertTrue(all(p.grad is not None for block in model.backbone.blocks[-2:] for p in block.parameters()))
         self.assertTrue(torch.equal(before['head.1.running_mean'],model.head[1].running_mean))
-    def test_epoch_zero_and_improvement_selection(self):
-        for improved in (False,True):
-            model=m.FineTuneB(Encoder(),source());before=copy.deepcopy(model.state_dict())
-            target=np.arange(4);p=torch.full((4,20),.001);p[:,0]=.981
-            q=torch.full((4,20),.001);q[range(4),target]=.981
-            values=[p,q if improved else p,q if improved else p]
-            loader=DataLoader(TensorDataset(torch.randn(4,1),torch.tensor(target)),batch_size=4)
-            with tempfile.TemporaryDirectory() as folder,patch.object(m,'image_probabilities',side_effect=values):
-                epoch,score,prob,state=m.fine_tune(model,loader,[],target,None,'cpu',folder,epochs=1)
-            self.assertEqual(epoch,int(improved));self.assertEqual(score['correct'],4 if improved else 1)
-            if not improved:
-                for key in before:self.assertTrue(torch.equal(before[key],model.state_dict()[key]),key)
+    def test_three_epochs_keep_final_even_when_validation_worsens(self):
+        model=m.FineTuneB(Encoder(),source());before=copy.deepcopy(model.state_dict())
+        target=np.arange(4);wrong=torch.full((4,20),.001);wrong[:,0]=.981
+        correct=torch.full((4,20),.001);correct[range(4),target]=.981
+        loader=DataLoader(TensorDataset(torch.randn(4,1),torch.tensor(target)),batch_size=4)
+        with tempfile.TemporaryDirectory() as folder,patch.object(m,'image_probabilities',side_effect=[correct,wrong,correct,wrong]) as inference:
+            epoch,score,prob,state=m.fine_tune(model,loader,[],target,None,'cpu',folder)
+            history=m.pd.read_csv(Path(folder)/'training_history.csv')
+            self.assertEqual(history.epoch.tolist(),[0,1,2,3])
+        self.assertEqual(inference.call_count,4)
+        self.assertEqual(epoch,3);self.assertEqual(score['correct'],1)
+        self.assertTrue(torch.equal(prob,wrong))
+        self.assertTrue(any(not torch.equal(before[k],v) for k,v in state.items()))
+        for key in state:self.assertTrue(torch.equal(state[key],model.state_dict()[key]))
+        with self.assertRaises(AssertionError):m.fine_tune(model,loader,[],target,None,'cpu','unused',epochs=1)
     def test_cache_replay_and_rejection(self):
         target=np.arange(4);ids=['a','b','c'];base=source()
         meta={'test_ids':ids,'image_size':336};sig=hashlib.sha256(json.dumps(meta,sort_keys=True).encode()).hexdigest()
@@ -93,13 +96,13 @@ class Tests(unittest.TestCase):
                 dataset.return_value.class_to_idx=mapping;dataset.return_value.samples=[('unused',0)]*700;dataset.return_value.__len__.return_value=700
                 stack.enter_context(patch.object(m.FineTuneB,'to',lambda self,*a,**kw:self))
                 stack.enter_context(patch.object(m,'image_probabilities',return_value=p))
-                stack.enter_context(patch.object(m,'fine_tune',return_value=(1,m.metrics(target,p),p,{'synthetic':torch.ones(1)})))
+                stack.enter_context(patch.object(m,'fine_tune',return_value=(3,m.metrics(target,p),p,{'synthetic':torch.ones(1)})))
                 output,result=m.run_i3(root,f0,i1,i2,root)
             self.assertTrue(result['candidate_exported'])
-            candidate=m.pd.read_csv(output/'F0_I3_B336_L336_equal_backbone_submission.csv',dtype={'image_id':str})
+            candidate=m.pd.read_csv(output/'F0_I3_Fixed3_B336_L336_submission.csv',dtype={'image_id':str})
             self.assertEqual(candidate.image_id.tolist(),ids)
             self.assertTrue((candidate.label==0).all())
-            self.assertTrue((output/'I3_B336_finetuned.pt').is_file())
+            self.assertTrue((output/'I3_B336_fixed3.pt').is_file())
             for name,digest in previous.items():self.assertEqual(m.sha(name),digest)
 
     def test_notebook_self_contained(self):

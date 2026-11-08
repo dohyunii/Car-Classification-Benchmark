@@ -1,4 +1,4 @@
-"""I3: conservative last-two-block B336 fine-tuning; fixed S/B/L blend."""
+"""I3 Fixed3: train three epochs; validation diagnostic only; fixed S/B/L blend."""
 from pathlib import Path
 import gc, hashlib, json, random, subprocess, time, uuid
 from urllib.error import HTTPError
@@ -15,7 +15,7 @@ from six_head_ensemble import set_seed
 from vitb336_experiment import transforms336, validate_source_data
 from vitl336_experiment import load_official
 
-RECIPE = {'seed':2026, 'epochs':10, 'patience':3, 'batch_size':4,
+RECIPE = {'seed':2026, 'epochs':3, 'batch_size':4,
           'backbone_lr':2e-6, 'head_lr':3e-5, 'weight_decay':1e-4, 'clip_norm':1.0}
 
 class TrainImages(Dataset):
@@ -86,12 +86,10 @@ def equal_blend(small,base,large):
         assert torch.allclose(p.sum(1),torch.ones(len(p)),atol=1e-5)
     return (small+base+large)/3
 
-def fine_tune(model,train_loader,val_paths,target,evaluation,device,output,epochs=10):
-    assert 1<=epochs<=RECIPE['epochs']
+def fine_tune(model,train_loader,val_paths,target,evaluation,device,output,epochs=3):
+    assert epochs==RECIPE['epochs']==3, 'I3 Fixed3 always trains exactly three epochs'
     baseline=image_probabilities(model,val_paths,evaluation,device)
-    best_metrics=metrics(target,baseline);best_prob=baseline;best_epoch=0;bad=0
-    best_state={k:v.detach().cpu().clone() for k,v in model.state_dict().items()}
-    history=[{'epoch':0,**best_metrics}]
+    history=[{'epoch':0,**metrics(target,baseline)}]
     optimizer=torch.optim.AdamW([
         {'params':[p for p in model.backbone.parameters() if p.requires_grad],'lr':RECIPE['backbone_lr']},
         {'params':model.head.parameters(),'lr':RECIPE['head_lr']}],weight_decay=RECIPE['weight_decay'])
@@ -109,16 +107,10 @@ def fine_tune(model,train_loader,val_paths,target,evaluation,device,output,epoch
         score=metrics(target,p)
         history.append({'epoch':epoch,'train_loss':loss_sum/len(train_loader.dataset),'seconds':time.perf_counter()-started,**score})
         print('I3_EPOCH',epoch,score,flush=True)
-        if score['accuracy']>best_metrics['accuracy']:
-            best_epoch,best_metrics,best_prob,bad=epoch,score,p,0
-            best_state={k:v.detach().cpu().clone() for k,v in model.state_dict().items()}
-        else: bad+=1
+        # Validation is diagnostic: it never changes duration or checkpoint selection.
         pd.DataFrame(history).to_csv(Path(output)/'training_history.csv',index=False)
-        if bad>=RECIPE['patience']: break
-    model.load_state_dict(best_state,strict=True)
-    restored=image_probabilities(model,val_paths,evaluation,device)
-    assert torch.allclose(restored,best_prob,atol=1e-6,rtol=1e-5)
-    return best_epoch,best_metrics,best_prob,best_state
+    state={k:v.detach().cpu().clone() for k,v in model.state_dict().items()}
+    return epochs,score,p,state
 
 def run_i3(data_root,f0_run,i1_run,i2_run,storage_root):
     assert torch.cuda.is_available(), 'Select a GPU runtime in Colab before running I3.'
@@ -170,38 +162,37 @@ def run_i3(data_root,f0_run,i1_run,i2_run,storage_root):
     epoch_zero=image_probabilities(model,val_paths,evaluation,device)
     reproduce(metrics(target,epoch_zero),base['metrics'],'Fine-tune epoch zero')
     assert torch.allclose(epoch_zero,vb,atol=2e-5,rtol=2e-4), 'Source image/cache probabilities differ'
-    root=Path(storage_root)/'student_outputs_I3_B336_FineTune'
+    root=Path(storage_root)/'student_outputs_I3_B336_Fixed3'
     output=root/uuid.uuid4().hex[:12];output.mkdir(parents=True,exist_ok=False)
     print('OUTPUT',output,'DEVICE',torch.cuda.get_device_name(0),flush=True)
     train=datasets.ImageFolder(Path(data_root)/'train');assert train.class_to_idx==mapping and len(train)==700
     set_seed(RECIPE['seed'])
     loader=DataLoader(TrainImages(train.samples,augmentation),batch_size=RECIPE['batch_size'],shuffle=True,num_workers=0,generator=torch.Generator().manual_seed(RECIPE['seed']))
     provenance={'recipe':RECIPE,'source_sha256':original,'reference_submission_sha256':sha(control_path),
-        'selection':'strict validation accuracy improvement; epoch zero eligible',
+        'selection':'fixed epoch 3; validation diagnostic only',
         'unfrozen_blocks':[10,11],'final_norm_trainable':True,'head_batchnorm_running_stats':'fixed',
         'feature_statistics':'fixed source training-only statistics','train_count':700,
         'torch':str(torch.__version__),'device':torch.cuda.get_device_name(0),
         'trainable_parameters':sum(p.numel() for p in model.parameters() if p.requires_grad)}
     (output/'configuration.json').write_text(json.dumps(provenance,indent=2))
     epoch,score,pv,state=fine_tune(model,loader,val_paths,target,evaluation,device,output)
-    result={'best_epoch':epoch,'baseline_B336':metrics(target,vb),'selected_B336':score,
-        'current_ensemble':metrics(target,current_val),'candidate_exported':epoch>0,
+    result={'selected_epoch':epoch,'baseline_B336':metrics(target,vb),'selected_B336':score,
+        'current_ensemble':metrics(target,current_val),'candidate_exported':True,
         'historical_best_kaggle':.97959,'submitted':False,'test_labels_used':False,
         'source_predictions_reproduced':True,'configuration':provenance}
     export(output/'CurrentBest_097959_control.csv',ids,current_test)
-    if epoch>0:
-        checkpoint=output/'I3_B336_finetuned.pt'
-        with checkpoint.open('xb') as stream:
-            torch.save({'model_state_dict':state,'class_to_idx':mapping,'head_config':base['head_config'],
-                'backbone':'dinov2_vitb14','resolution':336,'hub_ref':HUB_REF,'best_epoch':epoch,
-                'metrics':score,'source_feature_metadata':base['feature_metadata'],'provenance':provenance},stream)
-        pt=image_probabilities(model,test_paths,evaluation,device)
-        candidate=equal_blend(vs.mean(0),pv,vl)
-        result['candidate_ensemble']=metrics(target,candidate)
-        result['checkpoint']=str(checkpoint);result['checkpoint_sha256']=sha(checkpoint)
-        export(output/'F0_I3_B336_L336_equal_backbone_submission.csv',ids,equal_blend(ts.mean(0),pt,tl))
-        np.savez_compressed(output/'probabilities.npz',validation=pv.numpy(),test=pt.numpy(),targets=target)
-    else: print('NO_IMPROVEMENT: epoch zero retained; keep the 0.97959 submission.',flush=True)
+    assert epoch==3
+    checkpoint=output/'I3_B336_fixed3.pt'
+    with checkpoint.open('xb') as stream:
+        torch.save({'model_state_dict':state,'class_to_idx':mapping,'head_config':base['head_config'],
+            'backbone':'dinov2_vitb14','resolution':336,'hub_ref':HUB_REF,'selected_epoch':epoch,
+            'metrics':score,'source_feature_metadata':base['feature_metadata'],'provenance':provenance},stream)
+    pt=image_probabilities(model,test_paths,evaluation,device)
+    candidate=equal_blend(vs.mean(0),pv,vl)
+    result['candidate_ensemble']=metrics(target,candidate)
+    result['checkpoint']=str(checkpoint);result['checkpoint_sha256']=sha(checkpoint)
+    export(output/'F0_I3_Fixed3_B336_L336_submission.csv',ids,equal_blend(ts.mean(0),pt,tl))
+    np.savez_compressed(output/'probabilities.npz',validation=pv.numpy(),test=pt.numpy(),targets=target)
     for p in paths: assert sha(p)==original[str(p)], 'Source checkpoint modified'
     (output/'summary.json').write_text(json.dumps(result,indent=2))
     print('COMPLETE',output,json.dumps(result),flush=True)
